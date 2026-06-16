@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Card,
   Row,
@@ -34,7 +34,7 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
-import { PLANTS, generateAlerts } from '../mock/data';
+import { PLANTS, generateAlerts, generateWaterQuality, generateEquipmentStatus } from '../mock/data';
 import { useAppContext } from '../store/context';
 import { filterPlantsByPermission } from '../utils/permission';
 import type { AlertRecord, ApprovalStep, PlantInfo } from '../types';
@@ -172,6 +172,16 @@ const AlertCenter: React.FC = () => {
   const [monitoredAbnormalPlants, setMonitoredAbnormalPlants] = useState<string[]>([]);
   const [logModalVisible, setLogModalVisible] = useState(false);
 
+  useEffect(() => {
+    const baseAlerts = generateAlerts(permissionFilteredPlants);
+    if (user.role === 'municipal' && user.city) {
+      const municipalPlantIds = permissionFilteredPlants.filter((p) => p.city === user.city).map((p) => p.id);
+      setAlerts(baseAlerts.filter((a) => municipalPlantIds.includes(a.plantId)));
+    } else {
+      setAlerts(baseAlerts);
+    }
+  }, [user, permissionFilteredPlants]);
+
   const stats = useMemo(() => {
     const total = alerts.length;
     const pending = alerts.filter((a) => a.status === 'pending').length;
@@ -268,24 +278,36 @@ const AlertCenter: React.FC = () => {
     const newAbnormalPlantIds: string[] = [];
     const newAlerts: AlertRecord[] = [];
     const now = new Date().toISOString();
+    const normalPlantTypeKeys: string[] = [];
 
-    permissionFilteredPlants.forEach((plant, idx) => {
-      const seed = `${plant.id}-${timestamp}`;
-      const waterQualityAbnormal = deterministicRandom(seed + 'wq') < 0.15;
-      const equipmentAbnormal = deterministicRandom(seed + 'eq') < 0.1;
+    permissionFilteredPlants.forEach((plant) => {
+      const waterQuality = generateWaterQuality(plant);
+      const equipment = generateEquipmentStatus(plant.id);
+
+      const codExceed = waterQuality.codOut > waterQuality.codLimit;
+      const nh3nExceed = waterQuality.nh3nOut > waterQuality.nh3nLimit;
+      const tpExceed = waterQuality.tpOut > waterQuality.tpLimit;
+      const waterQualityAbnormal = codExceed || nh3nExceed || tpExceed;
+
+      const equipmentAbnormal = equipment.faultRate > 5;
 
       if (waterQualityAbnormal) {
         const alertId = `SYNC-${plant.id}-water_quality-${timestamp}`;
         const dedupeKey = `${plant.id}-water_quality`;
         const exists = alerts.some((a) => `${a.plantId}-${a.type}` === dedupeKey);
         if (!exists) {
+          const exceedMsgs: string[] = [];
+          if (codExceed) exceedMsgs.push(`COD${waterQuality.codOut}mg/L超标（限值${waterQuality.codLimit}mg/L）`);
+          if (nh3nExceed) exceedMsgs.push(`氨氮${waterQuality.nh3nOut}mg/L超标（限值${waterQuality.nh3nLimit}mg/L）`);
+          if (tpExceed) exceedMsgs.push(`总磷${waterQuality.tpOut}mg/L超标（限值${waterQuality.tpLimit}mg/L）`);
+          const detailMsg = exceedMsgs.length > 0 ? exceedMsgs.join('，') : '水质指标超标';
           newAlerts.push({
             id: alertId,
             plantId: plant.id,
             plantName: plant.name,
             type: 'water_quality',
             level: 1,
-            message: `${PUSH_PREFIX}${generateSyncWaterQualityMessage(plant, seed + 'wqmsg')}`,
+            message: `${PUSH_PREFIX}${detailMsg}`,
             timestamp: now,
             status: 'pending',
             approvalFlow: [
@@ -298,6 +320,8 @@ const AlertCenter: React.FC = () => {
             newAbnormalPlantIds.push(plant.id);
           }
         }
+      } else {
+        normalPlantTypeKeys.push(`${plant.id}-water_quality`);
       }
 
       if (equipmentAbnormal) {
@@ -305,13 +329,14 @@ const AlertCenter: React.FC = () => {
         const dedupeKey = `${plant.id}-equipment`;
         const exists = alerts.some((a) => `${a.plantId}-${a.type}` === dedupeKey);
         if (!exists) {
+          const detailMsg = `设备综合故障率${equipment.faultRate}%（阈值5%），故障设备${equipment.faultEquipment}台/总数${equipment.totalEquipment}台`;
           newAlerts.push({
             id: alertId,
             plantId: plant.id,
             plantName: plant.name,
             type: 'equipment',
             level: 1,
-            message: `${PUSH_PREFIX}${generateSyncEquipmentMessage(plant, seed + 'eqmsg')}`,
+            message: `${PUSH_PREFIX}${detailMsg}`,
             timestamp: now,
             status: 'pending',
             approvalFlow: [
@@ -324,15 +349,58 @@ const AlertCenter: React.FC = () => {
             newAbnormalPlantIds.push(plant.id);
           }
         }
+      } else {
+        normalPlantTypeKeys.push(`${plant.id}-equipment`);
       }
     });
 
-    if (newAlerts.length > 0) {
-      setAlerts((prev) => [...newAlerts, ...prev]);
+    setAlerts((prev) => {
+      let result = [...prev];
+      if (normalPlantTypeKeys.length > 0) {
+        result = result.map((a) => {
+          const key = `${a.plantId}-${a.type}`;
+          if (normalPlantTypeKeys.includes(key) && (a.status === 'pending' || a.status === 'processing')) {
+            const flow = getApprovalFlow(a);
+            const updatedFlow: ApprovalStep[] = flow.map((step, idx) => {
+              if (step.status === 'pending') {
+                return {
+                  ...step,
+                  status: 'approved',
+                  timestamp: new Date().toISOString(),
+                  comment: idx === flow.length - 1 ? '异常指标已恢复正常，预警解除' : '已确认',
+                };
+              }
+              return step;
+            });
+            return {
+              ...a,
+              status: 'resolved',
+              timestamp: new Date().toISOString(),
+              approvalFlow: updatedFlow,
+            };
+          }
+          return a;
+        });
+      }
+      if (newAlerts.length > 0) {
+        result = [...newAlerts, ...result];
+      }
+      return result;
+    });
+
+    if (newAbnormalPlantIds.length > 0) {
       setMonitoredAbnormalPlants((prev) => Array.from(new Set([...prev, ...newAbnormalPlantIds])));
     }
 
-    message.success(`同步完成，新增 ${newAlerts.length} 条预警`);
+    const resolvedCount = normalPlantTypeKeys.filter((k) => {
+      return alerts.some((a) => `${a.plantId}-${a.type}` === k && (a.status === 'pending' || a.status === 'processing'));
+    }).length;
+
+    if (newAlerts.length > 0 || resolvedCount > 0) {
+      message.success(`同步完成，新增 ${newAlerts.length} 条预警，解除 ${resolvedCount} 条已恢复预警`);
+    } else {
+      message.success('同步完成，当前监控数据正常，无新增预警');
+    }
   };
 
   const handleResolveAlert = (alert: AlertRecord) => {
