@@ -16,6 +16,10 @@ import {
   Space,
   Typography,
   Badge,
+  Popconfirm,
+  message,
+  Descriptions,
+  Timeline,
 } from 'antd';
 import {
   AlertOutlined,
@@ -24,13 +28,26 @@ import {
   EyeOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
+  SyncOutlined,
+  UndoOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { PLANTS, generateAlerts } from '../mock/data';
-import type { AlertRecord, ApprovalStep } from '../types';
+import { useAppContext } from '../store/context';
+import { filterPlantsByPermission } from '../utils/permission';
+import type { AlertRecord, ApprovalStep, PlantInfo } from '../types';
 
 const { Title, Text } = Typography;
+
+interface ExecutionRecord {
+  content: string;
+  executor: string;
+  executeTime: string;
+  result: string;
+  followUp: string;
+}
 
 const typeConfig: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
   water_quality: { label: '水质超标', color: '#ff4d4f', icon: <AlertOutlined /> },
@@ -60,15 +77,100 @@ const headStyle: React.CSSProperties = {
   color: '#262626',
 };
 
+const PUSH_PREFIX = '【已推送：厂长-张明、属地生态环境局水环境科-李强】';
+
+function deterministicRandom(seed: string): number {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    const char = seed.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash) / 2147483647;
+}
+
+function pickDeterministic<T>(seed: string, arr: T[]): T {
+  const idx = Math.floor(deterministicRandom(seed) * arr.length);
+  return arr[idx];
+}
+
+function generateExecutionRecord(alert: AlertRecord): ExecutionRecord {
+  const seed = `${alert.plantId}-${alert.type}`;
+  const rand = deterministicRandom(seed);
+
+  let content: string;
+  if (alert.type === 'water_quality') {
+    const doFrom = (1.8 + rand * 0.6).toFixed(1);
+    const doTo = (parseFloat(doFrom) + 0.3 + rand * 0.4).toFixed(1);
+    const refluxFrom = Math.floor(70 + rand * 20);
+    const refluxTo = refluxFrom + Math.floor(5 + rand * 15);
+    content = `曝气池DO浓度从${doFrom}mg/L提升至${doTo}mg/L；污泥回流比从${refluxFrom}%调整至${refluxTo}%`;
+  } else if (alert.type === 'equipment') {
+    const equipOptions = [
+      '更换1号鼓风机轴承，重新校准压力传感器',
+      '维修3号回流泵机械密封，更换滤芯',
+      '清理2号曝气盘堵塞组，更换老化膜片',
+      '校准pH/DO在线传感器，更换电极电解液',
+    ];
+    content = pickDeterministic(seed, equipOptions);
+  } else {
+    content = `优化工艺调度方案，提升处理负荷至设计值${Math.floor(85 + rand * 10)}%`;
+  }
+
+  const flow = alert.approvalFlow;
+  const executeTime = flow && flow[2]?.timestamp
+    ? flow[2].timestamp
+    : new Date().toISOString();
+
+  return {
+    content,
+    executor: '厂长-张明',
+    executeTime,
+    result: '成功',
+    followUp: alert.type === 'equipment'
+      ? '设备运行平稳，72小时无再次报警记录'
+      : '持续监测出水COD/氨氮指标，预计24小时内见效',
+  };
+}
+
+function generateSyncWaterQualityMessage(plant: PlantInfo, seed: string): string {
+  const indicators = [
+    { name: 'COD', valueFn: () => (51 + deterministicRandom(seed + 'v') * 29).toFixed(0), limit: '50', unit: 'mg/L' },
+    { name: '氨氮', valueFn: () => (5.2 + deterministicRandom(seed + 'v') * 6.8).toFixed(1), limit: '5', unit: 'mg/L' },
+    { name: '总磷', valueFn: () => (0.55 + deterministicRandom(seed + 'v') * 0.95).toFixed(1), limit: '0.5', unit: 'mg/L' },
+  ];
+  const indicator = pickDeterministic(seed, indicators);
+  const duration = Math.floor(1 + deterministicRandom(seed + 'd') * 5);
+  return `${indicator.name}${indicator.valueFn()}${indicator.unit}超标（限值${indicator.limit}${indicator.unit}），已持续${duration}小时`;
+}
+
+function generateSyncEquipmentMessage(plant: PlantInfo, seed: string): string {
+  const total = Math.floor(100 + deterministicRandom(seed + 't') * 100);
+  const faultCount = Math.floor(8 + deterministicRandom(seed + 'f') * 17);
+  const faultRate = ((faultCount / total) * 100).toFixed(1);
+  return `设备综合故障率${faultRate}%（阈值5%），故障设备${faultCount}台/总数${total}台`;
+}
+
 const AlertCenter: React.FC = () => {
   const navigate = useNavigate();
-  const [alerts, setAlerts] = useState<AlertRecord[]>(() => generateAlerts(PLANTS));
+  const { user } = useAppContext();
+  const permissionFilteredPlants = useMemo(() => filterPlantsByPermission(PLANTS, user.role, user.province, user.city), [user]);
+  const [alerts, setAlerts] = useState<AlertRecord[]>(() => {
+    const baseAlerts = generateAlerts(permissionFilteredPlants);
+    if (user.role === 'municipal' && user.city) {
+      const municipalPlantIds = permissionFilteredPlants.filter((p) => p.city === user.city).map((p) => p.id);
+      return baseAlerts.filter((a) => municipalPlantIds.includes(a.plantId));
+    }
+    return baseAlerts;
+  });
   const [activeTab, setActiveTab] = useState<string>('all');
   const [detailDrawerVisible, setDetailDrawerVisible] = useState(false);
   const [selectedAlert, setSelectedAlert] = useState<AlertRecord | null>(null);
   const [processModalVisible, setProcessModalVisible] = useState(false);
   const [currentApprovalStep, setCurrentApprovalStep] = useState<number>(0);
   const [form] = Form.useForm();
+  const [monitoredAbnormalPlants, setMonitoredAbnormalPlants] = useState<string[]>([]);
+  const [logModalVisible, setLogModalVisible] = useState(false);
 
   const stats = useMemo(() => {
     const total = alerts.length;
@@ -161,6 +263,105 @@ const AlertCenter: React.FC = () => {
     });
   };
 
+  const handleSyncAbnormal = () => {
+    const timestamp = Date.now();
+    const newAbnormalPlantIds: string[] = [];
+    const newAlerts: AlertRecord[] = [];
+    const now = new Date().toISOString();
+
+    permissionFilteredPlants.forEach((plant, idx) => {
+      const seed = `${plant.id}-${timestamp}`;
+      const waterQualityAbnormal = deterministicRandom(seed + 'wq') < 0.15;
+      const equipmentAbnormal = deterministicRandom(seed + 'eq') < 0.1;
+
+      if (waterQualityAbnormal) {
+        const alertId = `SYNC-${plant.id}-water_quality-${timestamp}`;
+        const dedupeKey = `${plant.id}-water_quality`;
+        const exists = alerts.some((a) => `${a.plantId}-${a.type}` === dedupeKey);
+        if (!exists) {
+          newAlerts.push({
+            id: alertId,
+            plantId: plant.id,
+            plantName: plant.name,
+            type: 'water_quality',
+            level: 1,
+            message: `${PUSH_PREFIX}${generateSyncWaterQualityMessage(plant, seed + 'wqmsg')}`,
+            timestamp: now,
+            status: 'pending',
+            approvalFlow: [
+              { role: '厂长', name: '张明', status: 'pending' },
+              { role: '区环保局复核', name: '李强', status: 'pending' },
+              { role: '省厅批准', name: '王伟', status: 'pending' },
+            ],
+          });
+          if (!newAbnormalPlantIds.includes(plant.id)) {
+            newAbnormalPlantIds.push(plant.id);
+          }
+        }
+      }
+
+      if (equipmentAbnormal) {
+        const alertId = `SYNC-${plant.id}-equipment-${timestamp}`;
+        const dedupeKey = `${plant.id}-equipment`;
+        const exists = alerts.some((a) => `${a.plantId}-${a.type}` === dedupeKey);
+        if (!exists) {
+          newAlerts.push({
+            id: alertId,
+            plantId: plant.id,
+            plantName: plant.name,
+            type: 'equipment',
+            level: 1,
+            message: `${PUSH_PREFIX}${generateSyncEquipmentMessage(plant, seed + 'eqmsg')}`,
+            timestamp: now,
+            status: 'pending',
+            approvalFlow: [
+              { role: '厂长', name: '张明', status: 'pending' },
+              { role: '区环保局复核', name: '李强', status: 'pending' },
+              { role: '省厅批准', name: '王伟', status: 'pending' },
+            ],
+          });
+          if (!newAbnormalPlantIds.includes(plant.id)) {
+            newAbnormalPlantIds.push(plant.id);
+          }
+        }
+      }
+    });
+
+    if (newAlerts.length > 0) {
+      setAlerts((prev) => [...newAlerts, ...prev]);
+      setMonitoredAbnormalPlants((prev) => Array.from(new Set([...prev, ...newAbnormalPlantIds])));
+    }
+
+    message.success(`同步完成，新增 ${newAlerts.length} 条预警`);
+  };
+
+  const handleResolveAlert = (alert: AlertRecord) => {
+    setAlerts((prev) =>
+      prev.map((a) => {
+        if (a.id !== alert.id) return a;
+        const flow = getApprovalFlow(a);
+        const updatedFlow: ApprovalStep[] = flow.map((step, idx) => {
+          if (step.status === 'pending') {
+            return {
+              ...step,
+              status: 'approved',
+              timestamp: new Date().toISOString(),
+              comment: idx === flow.length - 1 ? '异常指标已恢复正常，预警解除' : '已确认',
+            };
+          }
+          return step;
+        });
+        return {
+          ...a,
+          status: 'resolved',
+          timestamp: new Date().toISOString(),
+          approvalFlow: updatedFlow,
+        };
+      })
+    );
+    message.success('预警已解除');
+  };
+
   const columns = [
     {
       title: '预警级别',
@@ -215,7 +416,7 @@ const AlertCenter: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 280,
+      width: 360,
       render: (_: any, record: AlertRecord) => {
         const flow = getApprovalFlow(record);
         const currentStepIdx = getCurrentStepIndex(flow);
@@ -233,6 +434,18 @@ const AlertCenter: React.FC = () => {
             <Button type="link" size="small" onClick={() => handleViewDetail(record)}>
               三级审批
             </Button>
+            {record.status !== 'resolved' && (
+              <Popconfirm
+                title="确认异常已解除？"
+                onConfirm={() => handleResolveAlert(record)}
+                okText="确认"
+                cancelText="取消"
+              >
+                <Button type="link" size="small" icon={<UndoOutlined />} danger>
+                  解除预警
+                </Button>
+              </Popconfirm>
+            )}
           </Space>
         );
       },
@@ -245,6 +458,8 @@ const AlertCenter: React.FC = () => {
     { key: 'equipment', label: '设备故障' },
     { key: 'emission', label: '减排异常' },
   ];
+
+  const selectedExecutionRecord = selectedAlert ? generateExecutionRecord(selectedAlert) : null;
 
   return (
     <div style={{ padding: 0, background: '#f5f7fa', minHeight: '100%' }}>
@@ -303,7 +518,16 @@ const AlertCenter: React.FC = () => {
         </Col>
       </Row>
 
-      <Card style={{ ...cardStyle, marginTop: 16 }} styles={{ header: headStyle }}>
+      <Card
+        style={{ ...cardStyle, marginTop: 16 }}
+        styles={{ header: headStyle }}
+        title="预警列表"
+        extra={
+          <Button type="primary" icon={<SyncOutlined />} onClick={handleSyncAbnormal}>
+            同步实时监控异常
+          </Button>
+        }
+      >
         <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems} />
         <Table
           columns={columns}
@@ -358,7 +582,7 @@ const AlertCenter: React.FC = () => {
                 </Col>
                 <Col span={24}>
                   <Text type="secondary">预警内容：</Text>
-                  <div style={{ marginTop: 8 }}>{selectedAlert.message}</div>
+                  <div style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>{selectedAlert.message}</div>
                 </Col>
               </Row>
             </Card>
@@ -408,6 +632,46 @@ const AlertCenter: React.FC = () => {
                 }))}
               />
             </Card>
+
+            {selectedAlert.status === 'resolved' && selectedExecutionRecord && (
+              <Card
+                size="small"
+                title={
+                  <Space>
+                    <span>工艺参数调整/应急处理执行记录</span>
+                    <Tag color="#52c41a">执行完毕</Tag>
+                  </Space>
+                }
+                extra={
+                  <Button
+                    type="link"
+                    size="small"
+                    icon={<FileTextOutlined />}
+                    onClick={() => setLogModalVisible(true)}
+                  >
+                    查看完整操作日志
+                  </Button>
+                }
+              >
+                <Descriptions column={1} size="small" bordered>
+                  <Descriptions.Item label="调整内容">
+                    {selectedExecutionRecord.content}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="执行人">
+                    {selectedExecutionRecord.executor}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="执行时间">
+                    {dayjs(selectedExecutionRecord.executeTime).format('YYYY-MM-DD HH:mm:ss')}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="执行结果">
+                    <Tag color="#52c41a">{selectedExecutionRecord.result}</Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="后续跟踪">
+                    {selectedExecutionRecord.followUp}
+                  </Descriptions.Item>
+                </Descriptions>
+              </Card>
+            )}
           </Space>
         )}
       </Drawer>
@@ -465,6 +729,73 @@ const AlertCenter: React.FC = () => {
               <Input.TextArea rows={4} placeholder="请输入审批备注..." />
             </Form.Item>
           </Form>
+        )}
+      </Modal>
+
+      <Modal
+        title="完整操作日志"
+        open={logModalVisible}
+        onCancel={() => setLogModalVisible(false)}
+        footer={[
+          <Button key="close" onClick={() => setLogModalVisible(false)}>
+            关闭
+          </Button>,
+        ]}
+      >
+        {selectedAlert && selectedExecutionRecord && (
+          <Timeline
+            mode="left"
+            items={[
+              {
+                color: '#ff4d4f',
+                label: dayjs(selectedAlert.timestamp).format('YYYY-MM-DD HH:mm:ss'),
+                children: (
+                  <div>
+                    <div><strong>预警触发</strong></div>
+                    <div style={{ color: '#8c8c8c', marginTop: 4 }}>{selectedAlert.message}</div>
+                  </div>
+                ),
+              },
+              ...getApprovalFlow(selectedAlert)
+                .filter((s) => s.status !== 'pending')
+                .map((step, idx) => ({
+                  color: '#52c41a',
+                  label: step.timestamp ? dayjs(step.timestamp).format('YYYY-MM-DD HH:mm:ss') : '',
+                  children: (
+                    <div>
+                      <div><strong>{step.role} - {step.name}</strong></div>
+                      <div style={{ color: '#8c8c8c', marginTop: 4 }}>
+                        审批通过：{step.comment || '无'}
+                      </div>
+                    </div>
+                  ),
+                })),
+              {
+                color: '#1890ff',
+                label: dayjs(selectedExecutionRecord.executeTime).format('YYYY-MM-DD HH:mm:ss'),
+                children: (
+                  <div>
+                    <div><strong>执行操作 - {selectedExecutionRecord.executor}</strong></div>
+                    <div style={{ color: '#8c8c8c', marginTop: 4 }}>
+                      {selectedExecutionRecord.content}
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                color: '#52c41a',
+                label: dayjs(selectedExecutionRecord.executeTime).add(5, 'minute').format('YYYY-MM-DD HH:mm:ss'),
+                children: (
+                  <div>
+                    <div><strong>执行结果确认</strong></div>
+                    <div style={{ color: '#8c8c8c', marginTop: 4 }}>
+                      执行{selectedExecutionRecord.result}。{selectedExecutionRecord.followUp}
+                    </div>
+                  </div>
+                ),
+              },
+            ]}
+          />
         )}
       </Modal>
     </div>

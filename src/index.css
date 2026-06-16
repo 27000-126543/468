@@ -69,3 +69,29 @@ body {
   justify-content: center;
   font-size: 28px;
 }
+
+@media print {
+  body.print-mode .ant-layout-sider,
+  body.print-mode .ant-layout-header,
+  body.print-mode .no-print {
+    display: none !important;
+  }
+  body.print-mode .ant-layout-content {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+  }
+  #report-content {
+    padding: 0;
+  }
+}
+
+body.print-mode {
+  overflow: visible !important;
+}
+
+body.print-mode .ant-layout,
+body.print-mode #root {
+  overflow: visible !important;
+  height: auto !important;
+}

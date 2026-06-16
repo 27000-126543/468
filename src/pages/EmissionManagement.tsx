@@ -1,9 +1,11 @@
 import React, { useState, useMemo } from 'react';
 import { Card, Row, Col, Statistic, Table, Tag, Button, Upload, Alert, Select, Typography, Space, Progress, message } from 'antd';
 import ReactECharts from 'echarts-for-react';
-import { UploadOutlined, FileExcelOutlined, WarningOutlined, SafetyOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { UploadOutlined, FileExcelOutlined, WarningOutlined, SafetyOutlined, CheckCircleOutlined, DeleteOutlined } from '@ant-design/icons';
 import * as XLSX from 'xlsx';
 import { generateEmissionPlan, generate90DayPrediction, PLANTS } from '../mock/data';
+import { useAppContext } from '../store/context';
+import { filterPlantsByPermission, filterProvinceList } from '../utils/permission';
 import type { EmissionPlan } from '../types';
 
 const { Title } = Typography;
@@ -19,20 +21,93 @@ const headStyle: React.CSSProperties = {
   color: '#262626',
 };
 
-const EmissionManagement: React.FC = () => {
-  const [selectedProvince, setSelectedProvince] = useState<string | undefined>(undefined);
-  const [uploadedInfo, setUploadedInfo] = useState<{ targetVolume: number; codLimit: number; nh3nLimit: number; tpLimit: number } | null>(null);
+interface UploadedEmissionRecord {
+  province: string;
+  city?: string;
+  targetVolume: number;
+  codLimit: number;
+  nh3nLimit: number;
+  tpLimit: number;
+}
 
-  const provinceList = useMemo(() => [...new Set(PLANTS.map((p) => p.province))].sort(), []);
+interface UploadedEmissionData {
+  records: UploadedEmissionRecord[];
+  uploadTime: string;
+}
+
+function hashString(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash);
+}
+
+function seededRandom(seed: number): () => number {
+  let s = seed % 2147483647;
+  if (s <= 0) s += 2147483646;
+  return () => {
+    s = (s * 16807) % 2147483647;
+    return s / 2147483647;
+  };
+}
+
+function hashRandom(str: string, min: number, max: number): number {
+  const rand = seededRandom(hashString(str));
+  return min + rand() * (max - min);
+}
+
+const EmissionManagement: React.FC = () => {
+  const { user } = useAppContext();
+  const permissionFilteredPlants = useMemo(() => filterPlantsByPermission(PLANTS, user.role, user.province, user.city), [user]);
+
+  const getDefaultProvince = () => {
+    if (user.role === 'provincial' || user.role === 'municipal') return user.province;
+    return undefined;
+  };
+
+  const [selectedProvince, setSelectedProvince] = useState<string | undefined>(getDefaultProvince());
+  const [uploadedInfo, setUploadedInfo] = useState<UploadedEmissionData | null>(null);
+
+  const provinceList = useMemo(() => [...new Set(permissionFilteredPlants.map((p) => p.province))].sort(), [permissionFilteredPlants]);
 
   const emissionPlans = useMemo<EmissionPlan[]>(() => {
+    if (uploadedInfo && uploadedInfo.records.length > 0) {
+      return uploadedInfo.records.map((record) => {
+        const seedBase = `${record.province}-${record.city || ''}-${uploadedInfo.uploadTime}`;
+        const actualVolumeRatio = hashRandom(`${seedBase}-volume`, 0.6, 1.05);
+        const actualCodRatio = hashRandom(`${seedBase}-cod`, 0.6, 1.05);
+        const actualNh3nRatio = hashRandom(`${seedBase}-nh3n`, 0.65, 1.08);
+        const actualTpRatio = hashRandom(`${seedBase}-tp`, 0.6, 1.1);
+        return {
+          year: 2026,
+          province: record.province,
+          targetVolume: Math.round(record.targetVolume),
+          targetCod: Math.round(record.codLimit),
+          targetNh3n: Math.round(record.nh3nLimit),
+          targetTp: Math.round(record.tpLimit),
+          actualVolume: Math.round(record.targetVolume * actualVolumeRatio),
+          actualCod: Math.round(record.codLimit * actualCodRatio),
+          actualNh3n: Math.round(record.nh3nLimit * actualNh3nRatio),
+          actualTp: Math.round(record.tpLimit * actualTpRatio),
+        };
+      });
+    }
     return provinceList.map((province) => generateEmissionPlan(province));
-  }, [provinceList]);
+  }, [provinceList, uploadedInfo]);
 
   const filteredPlans = useMemo(() => {
-    if (!selectedProvince) return emissionPlans;
-    return emissionPlans.filter((p) => p.province === selectedProvince);
-  }, [emissionPlans, selectedProvince]);
+    let plans = emissionPlans;
+    if (user.role === 'municipal' && user.city) {
+      const municipalProvincePlants = permissionFilteredPlants.filter((p) => p.city === user.city);
+      const municipalProvinces = [...new Set(municipalProvincePlants.map((p) => p.province))];
+      plans = plans.filter((p) => municipalProvinces.includes(p.province));
+    }
+    if (!selectedProvince) return plans;
+    return plans.filter((p) => p.province === selectedProvince);
+  }, [emissionPlans, selectedProvince, user, permissionFilteredPlants]);
 
   const overallStats = useMemo(() => {
     const totalTarget = emissionPlans.reduce((s, p) => s + p.targetVolume, 0);
@@ -44,16 +119,34 @@ const EmissionManagement: React.FC = () => {
 
   const showAlert = overallStats.completionRate < 80;
 
+  const originalTargetSum = useMemo(() => {
+    return provinceList.reduce((sum, province) => {
+      const plan = generateEmissionPlan(province);
+      return sum + plan.targetVolume;
+    }, 0);
+  }, [provinceList]);
+
   const predictionData = useMemo(() => {
-    const data = generate90DayPrediction('全国');
+    const data = generate90DayPrediction(user.role === 'national' ? '全国' : user.province || '全国');
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const next90Days = data.filter((d) => {
       const date = new Date(d.date);
       return date >= today && date < new Date(today.getTime() + 90 * 86400000);
     });
+
+    if (uploadedInfo && uploadedInfo.records.length > 0) {
+      const uploadedTargetSum = uploadedInfo.records.reduce((s, r) => s + r.targetVolume, 0);
+      const ratio = originalTargetSum > 0 ? uploadedTargetSum / originalTargetSum : 1;
+      return next90Days.map((d) => ({
+        date: d.date,
+        planned: Math.round(d.planned * ratio),
+        actual: d.actual > 0 ? Math.round(d.actual * ratio) : 0,
+        predicted: d.predicted > 0 ? Math.round(d.predicted * ratio) : 0,
+      }));
+    }
     return next90Days;
-  }, []);
+  }, [uploadedInfo, originalTargetSum, user]);
 
   const predictionChartOption = useMemo(() => {
     const dates = predictionData.map((d) => d.date);
@@ -317,19 +410,115 @@ const EmissionManagement: React.FC = () => {
         const jsonData = XLSX.utils.sheet_to_json(sheet) as any[];
 
         if (jsonData.length > 0) {
-          const row = jsonData[0];
-          const targetVolume = row['目标处理量'] || row['targetVolume'] || 0;
-          const codLimit = row['COD限值'] || row['codLimit'] || 0;
-          const nh3nLimit = row['氨氮限值'] || row['nh3nLimit'] || 0;
-          const tpLimit = row['总磷限值'] || row['tpLimit'] || 0;
+          const records: UploadedEmissionRecord[] = [];
+          const firstRow = jsonData[0];
+          const keys = Object.keys(firstRow);
 
-          setUploadedInfo({
-            targetVolume: Number(targetVolume),
-            codLimit: Number(codLimit),
-            nh3nLimit: Number(nh3nLimit),
-            tpLimit: Number(tpLimit),
-          });
-          message.success('文件上传成功，已提取年度减排计划数据');
+          const hasProvinceKey = keys.some((k) =>
+            k === '省份' || k.toLowerCase() === 'province'
+          );
+
+          if (hasProvinceKey) {
+            jsonData.forEach((row) => {
+              const province = row['省份'] || row['province'] || row['Province'] || '';
+              const city = row['城市'] || row['city'] || row['City'];
+              const targetVolume = Number(
+                row['目标处理量'] || row['targetVolume'] || row['TargetVolume'] || 0
+              );
+              const codLimit = Number(
+                row['COD限值'] || row['codLimit'] || row['CodLimit'] || row['CODLimit'] || 0
+              );
+              const nh3nLimit = Number(
+                row['氨氮限值'] || row['nh3nLimit'] || row['Nh3nLimit'] || row['NH3NLimit'] || 0
+              );
+              const tpLimit = Number(
+                row['总磷限值'] || row['tpLimit'] || row['TpLimit'] || row['TPLimit'] || 0
+              );
+
+              if (province && targetVolume > 0) {
+                records.push({
+                  province: String(province),
+                  city: city ? String(city) : undefined,
+                  targetVolume,
+                  codLimit,
+                  nh3nLimit,
+                  tpLimit,
+                });
+              }
+            });
+          }
+
+          if (records.length === 0 && jsonData.length > 0) {
+            const totalTarget = jsonData.reduce((s: number, row: any) => {
+              const v = Number(
+                row['目标处理量'] || row['targetVolume'] || row['TargetVolume'] || 0
+              );
+              return s + (v > 0 ? v : 0);
+            }, 0);
+
+            const fallbackTargets: {
+              targetVolume: number;
+              codLimit: number;
+              nh3nLimit: number;
+              tpLimit: number;
+            }[] = [];
+
+            jsonData.forEach((row) => {
+              const targetVolume = Number(
+                row['目标处理量'] || row['targetVolume'] || row['TargetVolume'] || 0
+              );
+              const codLimit = Number(
+                row['COD限值'] || row['codLimit'] || row['CodLimit'] || row['CODLimit'] || 0
+              );
+              const nh3nLimit = Number(
+                row['氨氮限值'] || row['nh3nLimit'] || row['Nh3nLimit'] || row['NH3NLimit'] || 0
+              );
+              const tpLimit = Number(
+                row['总磷限值'] || row['tpLimit'] || row['TpLimit'] || row['TPLimit'] || 0
+              );
+              if (targetVolume > 0 || codLimit > 0 || nh3nLimit > 0 || tpLimit > 0) {
+                fallbackTargets.push({ targetVolume, codLimit, nh3nLimit, tpLimit });
+              }
+            });
+
+            const effectiveTargets = fallbackTargets.length > 0 ? fallbackTargets : [
+              {
+                targetVolume: totalTarget > 0 ? totalTarget : 0,
+                codLimit: 0,
+                nh3nLimit: 0,
+                tpLimit: 0,
+              },
+            ];
+
+            const targetTotal = effectiveTargets.reduce((s, t) => s + t.targetVolume, 0);
+            const codTotal = effectiveTargets.reduce((s, t) => s + t.codLimit, 0);
+            const nh3nTotal = effectiveTargets.reduce((s, t) => s + t.nh3nLimit, 0);
+            const tpTotal = effectiveTargets.reduce((s, t) => s + t.tpLimit, 0);
+
+            const n = provinceList.length;
+            if (n > 0) {
+              provinceList.forEach((province, idx) => {
+                const ratio = (idx + 1) / (n * (n + 1) / 2);
+                records.push({
+                  province,
+                  targetVolume: Math.round(targetTotal * ratio),
+                  codLimit: Math.round(codTotal * ratio),
+                  nh3nLimit: Math.round(nh3nTotal * ratio),
+                  tpLimit: Math.round(tpTotal * ratio),
+                });
+              });
+            }
+          }
+
+          if (records.length > 0) {
+            setUploadedInfo({
+              records,
+              uploadTime: new Date().toISOString(),
+            });
+            message.success(`文件上传成功，已提取 ${records.length} 条减排计划数据`);
+          } else {
+            message.error('未提取到有效数据，请检查文件格式');
+          }
         }
       } catch (error) {
         message.error('文件解析失败，请检查文件格式');
@@ -337,6 +526,11 @@ const EmissionManagement: React.FC = () => {
     };
     reader.readAsBinaryString(file);
     return false;
+  };
+
+  const handleClearUpload = () => {
+    setUploadedInfo(null);
+    message.info('已清除上传数据');
   };
 
   const uploadProps = {
@@ -386,21 +580,57 @@ const EmissionManagement: React.FC = () => {
         </Upload.Dragger>
 
         {uploadedInfo && (
-          <Alert
-            message="上传成功"
-            description={
-              <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                <span>年度目标处理量: <b>{uploadedInfo.targetVolume.toLocaleString()}</b> 吨</span>
-                <span>COD排放限值: <b>{uploadedInfo.codLimit.toLocaleString()}</b> 吨</span>
-                <span>氨氮排放限值: <b>{uploadedInfo.nh3nLimit.toLocaleString()}</b> 吨</span>
-                <span>总磷排放限值: <b>{uploadedInfo.tpLimit.toLocaleString()}</b> 吨</span>
+          <Card
+            type="inner"
+            style={{ marginTop: 16, borderColor: '#b7eb8f', background: '#f6ffed' }}
+            title={
+              <Space>
+                <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                <span style={{ color: '#389e0d' }}>上传成功</span>
               </Space>
             }
-            type="success"
-            showIcon
-            icon={<CheckCircleOutlined />}
-            style={{ marginTop: 16 }}
-          />
+            extra={
+              <Button
+                size="small"
+                danger
+                icon={<DeleteOutlined />}
+                onClick={handleClearUpload}
+              >
+                清除数据重新上传
+              </Button>
+            }
+          >
+            <Row gutter={[16, 16]}>
+              <Col span={8}>
+                <Statistic
+                  title={<span style={{ color: '#595959' }}>上传记录数</span>}
+                  value={uploadedInfo.records.length}
+                  suffix="条"
+                  valueStyle={{ color: '#1890ff', fontSize: 20 }}
+                />
+              </Col>
+              <Col span={8}>
+                <Statistic
+                  title={<span style={{ color: '#595959' }}>总目标处理量</span>}
+                  value={uploadedInfo.records.reduce((s, r) => s + r.targetVolume, 0)}
+                  suffix="吨"
+                  valueStyle={{ color: '#36cfc9', fontSize: 20 }}
+                  formatter={(v) => (v !== undefined && v !== null ? Number(v).toLocaleString() : v)}
+                />
+              </Col>
+              <Col span={8}>
+                <Statistic
+                  title={<span style={{ color: '#595959' }}>覆盖省份</span>}
+                  value={new Set(uploadedInfo.records.map((r) => r.province)).size}
+                  suffix="个"
+                  valueStyle={{ color: '#722ed1', fontSize: 20 }}
+                />
+              </Col>
+            </Row>
+            <div style={{ marginTop: 12, color: '#8c8c8c', fontSize: 12 }}>
+              已上传时间: {new Date(uploadedInfo.uploadTime).toLocaleString('zh-CN')}
+            </div>
+          </Card>
         )}
       </Card>
 
@@ -472,19 +702,22 @@ const EmissionManagement: React.FC = () => {
         style={{ ...cardStyle, marginTop: 16 }}
         styles={{ header: headStyle }}
         extra={
-          <Select
-            placeholder="选择省份"
-            allowClear
-            style={{ width: 180 }}
-            value={selectedProvince}
-            onChange={setSelectedProvince}
-          >
-            {provinceList.map((p) => (
-              <Option key={p} value={p}>
-                {p}
-              </Option>
-            ))}
-          </Select>
+          user.role === 'provincial' ? null : (
+            <Select
+              placeholder="选择省份"
+              allowClear={user.role !== 'municipal'}
+              style={{ width: 180 }}
+              value={selectedProvince}
+              onChange={setSelectedProvince}
+              disabled={user.role === 'municipal'}
+            >
+              {provinceList.map((p) => (
+                <Option key={p} value={p}>
+                  {p}
+                </Option>
+              ))}
+            </Select>
+          )
         }
       >
         <Table

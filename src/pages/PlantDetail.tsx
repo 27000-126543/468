@@ -1,9 +1,11 @@
 import React, { useMemo } from 'react';
-import { Card, Row, Col, Button, Space, Tag, Typography, Timeline, Statistic } from 'antd';
+import { Card, Row, Col, Button, Space, Tag, Typography, Timeline, Statistic, Alert } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import { ArrowLeftOutlined, EnvironmentOutlined, ThunderboltOutlined, ToolOutlined } from '@ant-design/icons';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, Navigate } from 'react-router-dom';
 import { PLANTS, generate7DayTrend, generateEquipmentStatus, generateEnergyData } from '../mock/data';
+import { useAppContext } from '../store/context';
+import { filterPlantsByPermission } from '../utils/permission';
 import type { PlantInfo, EquipmentFault } from '../types';
 
 const { Title, Text } = Typography;
@@ -11,10 +13,17 @@ const { Title, Text } = Typography;
 const PlantDetail: React.FC = () => {
   const navigate = useNavigate();
   const { plantId } = useParams<{ plantId: string }>();
+  const { user } = useAppContext();
+  const permissionFilteredPlants = useMemo(() => filterPlantsByPermission(PLANTS, user.role, user.province, user.city), [user]);
 
   const plant = useMemo<PlantInfo | undefined>(() => {
     return PLANTS.find((p) => p.id === plantId);
   }, [plantId]);
+
+  const hasPermission = useMemo(() => {
+    if (!plant) return false;
+    return permissionFilteredPlants.some((p) => p.id === plant.id);
+  }, [plant, permissionFilteredPlants]);
 
   const trendData = useMemo(() => {
     if (!plantId) return { cod: [], nh3n: [], tp: [] };
@@ -313,10 +322,20 @@ const PlantDetail: React.FC = () => {
     color: '#262626',
   };
 
-  if (!plant) {
+  if (!plant || !hasPermission) {
     return (
-      <div style={{ padding: 40, textAlign: 'center' }}>
-        <Text type="secondary">未找到该污水厂信息</Text>
+      <div style={{ padding: 40 }}>
+        <Alert
+          message="权限错误"
+          description="您没有权限访问该污水厂详情页，请检查管辖范围。"
+          type="error"
+          showIcon
+          style={{ marginBottom: 16 }}
+        />
+        <Button type="primary" onClick={() => navigate('/dashboard')}>
+          返回仪表板
+        </Button>
+        <Navigate to="/dashboard" replace />
       </div>
     );
   }

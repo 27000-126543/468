@@ -3,6 +3,8 @@ import { Card, Row, Col, Statistic, Table, Tag, Select, Input, Button, Space, Ti
 import ReactECharts from 'echarts-for-react';
 import { ToolOutlined, CheckCircleOutlined, WarningOutlined, SearchOutlined, HistoryOutlined, AlertOutlined } from '@ant-design/icons';
 import { PLANTS, generateEquipmentStatus } from '../mock/data';
+import { useAppContext } from '../store/context';
+import { filterPlantsByPermission } from '../utils/permission';
 import type { PlantInfo, EquipmentStatus } from '../types';
 
 const { Title, Text } = Typography;
@@ -118,17 +120,20 @@ function generateMaintenanceEvents(records: EquipmentRecord[]): MaintenanceEvent
 }
 
 const EquipmentManagement: React.FC = () => {
+  const { user } = useAppContext();
+  const permissionFilteredPlants = useMemo(() => filterPlantsByPermission(PLANTS, user.role, user.province, user.city), [user]);
+
   const [selectedPlant, setSelectedPlant] = useState<string | undefined>(undefined);
   const [selectedStatus, setSelectedStatus] = useState<string | undefined>(undefined);
   const [searchText, setSearchText] = useState<string>('');
 
   const equipmentStatuses = useMemo<EquipmentStatus[]>(() => {
-    return PLANTS.map((plant) => generateEquipmentStatus(plant.id));
-  }, []);
+    return permissionFilteredPlants.map((plant) => generateEquipmentStatus(plant.id));
+  }, [permissionFilteredPlants]);
 
   const equipmentRecords = useMemo<EquipmentRecord[]>(() => {
-    return generateEquipmentRecords(PLANTS);
-  }, []);
+    return generateEquipmentRecords(permissionFilteredPlants);
+  }, [permissionFilteredPlants]);
 
   const maintenanceEvents = useMemo<MaintenanceEvent[]>(() => {
     return generateMaintenanceEvents(equipmentRecords);
@@ -143,8 +148,8 @@ const EquipmentManagement: React.FC = () => {
   }, [equipmentStatuses]);
 
   const plantOptions = useMemo(() => {
-    return PLANTS.map((p) => ({ label: p.name, value: p.id }));
-  }, []);
+    return permissionFilteredPlants.map((p) => ({ label: p.name, value: p.id }));
+  }, [permissionFilteredPlants]);
 
   const statusDistribution = useMemo(() => {
     const total = stats.totalEquipment;
@@ -202,7 +207,7 @@ const EquipmentManagement: React.FC = () => {
   const plantFaultRates = useMemo(() => {
     return equipmentStatuses
       .map((es) => {
-        const plant = PLANTS.find((p) => p.id === es.plantId);
+        const plant = permissionFilteredPlants.find((p) => p.id === es.plantId);
         return {
           name: plant?.name || '',
           faultRate: es.faultRate,
@@ -210,7 +215,7 @@ const EquipmentManagement: React.FC = () => {
       })
       .sort((a, b) => b.faultRate - a.faultRate)
       .slice(0, 10);
-  }, [equipmentStatuses]);
+  }, [equipmentStatuses, permissionFilteredPlants]);
 
   const barChartOption = useMemo(() => {
     const barColors = plantFaultRates.map((p) => getFaultRateColor(p.faultRate));

@@ -142,21 +142,42 @@ export function generateEnergyData(plantId: string, days: number = 30): EnergyCo
   return data;
 }
 
+function generateWaterQualityMessage(plant: PlantInfo): string {
+  const indicators = [
+    { name: 'COD', value: rand(51, 80).toFixed(0), limit: '50', unit: 'mg/L' },
+    { name: '氨氮', value: rand(5.2, 12).toFixed(1), limit: '5', unit: 'mg/L' },
+    { name: '总磷', value: rand(0.55, 1.5).toFixed(1), limit: '0.5', unit: 'mg/L' },
+  ];
+  const indicator = pickOne(indicators);
+  const duration = randInt(1, 6);
+  return `${indicator.name}${indicator.value}${indicator.unit}超标（限值${indicator.limit}${indicator.unit}），已持续${duration}小时`;
+}
+
+function generateEquipmentMessage(plant: PlantInfo): string {
+  const total = randInt(100, 200);
+  const faultCount = randInt(8, 25);
+  const faultRate = ((faultCount / total) * 100).toFixed(1);
+  return `设备综合故障率${faultRate}%（阈值5%），故障设备${faultCount}台/总数${total}台`;
+}
+
+const PUSH_PREFIX = '【已推送：厂长-张明、属地生态环境局水环境科-李强】';
+
 export function generateAlerts(plants: PlantInfo[]): AlertRecord[] {
   const alerts: AlertRecord[] = [];
   const now = Date.now();
   plants.forEach((plant, idx) => {
     if (Math.random() < 0.12) {
       const type = Math.random() < 0.6 ? 'water_quality' as const : 'equipment' as const;
+      const contentMsg = type === 'water_quality'
+        ? generateWaterQualityMessage(plant)
+        : generateEquipmentMessage(plant);
       alerts.push({
         id: `ALT${String(idx + 1).padStart(4, '0')}`,
         plantId: plant.id,
         plantName: plant.name,
         type,
         level: Math.random() < 0.3 ? 1 : Math.random() < 0.6 ? 2 : 3,
-        message: type === 'water_quality'
-          ? `${plant.name}出水COD连续2小时超标，当前值68mg/L，限值50mg/L`
-          : `${plant.name}设备综合故障率${(rand(5, 12)).toFixed(1)}%，超过5%阈值`,
+        message: `${PUSH_PREFIX}${contentMsg}`,
         timestamp: new Date(now - randInt(1, 48) * 3600000).toISOString(),
         status: pickOne(['pending', 'processing', 'resolved']),
         approvalFlow: [
@@ -173,7 +194,7 @@ export function generateAlerts(plants: PlantInfo[]): AlertRecord[] {
         plantName: plant.name,
         type: 'emission',
         level: 2,
-        message: `${plant.name}实际减排量低于年度计划20%，请关注`,
+        message: `${PUSH_PREFIX}${plant.name}实际减排量低于年度计划20%，请关注`,
         timestamp: new Date(now - randInt(1, 168) * 3600000).toISOString(),
         status: pickOne(['pending', 'processing']),
       });
@@ -199,26 +220,150 @@ export function generateEmissionPlan(province: string): EmissionPlan {
   };
 }
 
-export function generateOperationReport(): OperationReport {
+export function hashString(s: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    hash ^= s.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+export function seededRandom(seed: number): () => number {
+  let s = seed || 1;
+  return function () {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+function seededRange(rand: () => number, min: number, max: number): number {
+  return rand() * (max - min) + min;
+}
+
+function seededInt(rand: () => number, min: number, max: number): number {
+  return Math.floor(seededRange(rand, min, max + 1));
+}
+
+export function generateWeeklyReport(weekNum: number): OperationReport {
+  const weekLabel = `2026年第${weekNum}周`;
+  const rand = seededRandom(hashString(`week-${weekNum}`));
+
+  const avgCompliance = +seededRange(rand, 94, 99).toFixed(1);
+  const complianceRateMom = +seededRange(rand, -3, 5).toFixed(2);
+  const complianceRateYoy = +seededRange(rand, -5, 8).toFixed(2);
+  const lastWeekCompliance = +(avgCompliance - complianceRateMom).toFixed(1);
+  const lastYearCompliance = +(avgCompliance - complianceRateYoy).toFixed(1);
+
+  const avgEnergy = +seededRange(rand, 0.28, 0.40).toFixed(3);
+  const lastWeekEnergyDelta = +seededRange(rand, -0.02, 0.02).toFixed(3);
+  const lastWeekEnergy = +Math.max(0.25, avgEnergy + lastWeekEnergyDelta).toFixed(3);
+  const minEnergy = +seededRange(rand, 0.20, 0.25).toFixed(2);
+  const maxEnergy = +seededRange(rand, 0.52, 0.62).toFixed(2);
+  const totalElectricity = seededInt(rand, 1100, 1450);
+  const totalCost = +(totalElectricity * 0.75).toFixed(1);
+
+  const rankingPlants = [
+    { plantId: 'P010101', name: '朝阳区第一污水处理厂', base: 0.22 },
+    { plantId: 'P020101', name: '浦东新区第一污水处理厂', base: 0.25 },
+    { plantId: 'P040101', name: '南京第一污水处理厂', base: 0.28 },
+    { plantId: 'P050101', name: '杭州第一污水处理厂', base: 0.30 },
+    { plantId: 'P030101', name: '广州第一污水处理厂', base: 0.32 },
+  ];
+  const shuffleSeed = hashString(`rank-${weekNum}`);
+  const order = seededRandom(shuffleSeed);
+  const shuffled = [...rankingPlants].sort(() => order() - 0.5);
+  const energyRanking = shuffled.map((p, idx) => ({
+    plantId: p.plantId,
+    name: p.name,
+    unitEnergy: +(p.base + seededRange(seededRandom(hashString(`p-${weekNum}-${idx}`)), -0.015, 0.015)).toFixed(2),
+  })).sort((a, b) => a.unitEnergy - b.unitEnergy);
+
   const faultTypes = ['电机故障', '阀门卡死', '传感器异常', '泵体泄漏', '曝气盘堵塞', '污泥浓缩机故障', '加药泵故障', '电气故障'];
+  const faultDistribution = faultTypes.map((type, i) => ({
+    type,
+    count: seededInt(seededRandom(hashString(`fault-${weekNum}-${i}`)), 3, 28),
+  }));
+  const totalFaultCount = faultDistribution.reduce((s, f) => s + f.count, 0);
+
+  const recPool = [
+    '建议将A2/O工艺曝气量下调8%，预计可降低能耗约12%',
+    '3号厂污泥回流比建议从80%调整至70%，改善脱氮效果',
+    '5号厂鼓风机建议安排预防性维护',
+    '建议东区CAST工艺厂群增加周末值班人员，降低故障响应时间',
+    '建议开展污泥脱水工艺参数优化，降低出泥含水率',
+    '对西北区域水厂开展节能专项审计，降低单位能耗',
+    '建议升级加药系统自动控制，提高药剂投加精度',
+    '建议开展生物池曝气均匀性检测，优化曝气布局',
+  ];
+  const recSeed = seededRandom(hashString(`rec-${weekNum}`));
+  const recIndices: number[] = [];
+  while (recIndices.length < 4) {
+    const idx = seededInt(recSeed, 0, recPool.length - 1);
+    if (!recIndices.includes(idx)) recIndices.push(idx);
+  }
+  const recommendations = recIndices.map((i) => recPool[i]);
+
+  const totalPlants = 286;
+  const riskPlants = seededInt(seededRandom(hashString(`risk-${weekNum}`)), 5, 15);
+  const stablePlants = totalPlants - riskPlants;
+
+  const totalEquipment = seededInt(seededRandom(hashString(`equip-total-${weekNum}`)), 12000, 13000);
+  const faultEquipment = seededInt(seededRandom(hashString(`equip-fault-${weekNum}`)), Math.max(totalFaultCount, 280), 360);
+  const faultRate = +((faultEquipment / totalEquipment) * 100).toFixed(2);
+  const faultRepaired = +(faultEquipment * seededRange(seededRandom(hashString(`repaired-${weekNum}`)), 0.8, 0.92)).toFixed(0);
+  const faultPending = faultEquipment - faultRepaired;
+  const avgRepairHours = +seededRange(seededRandom(hashString(`repair-${weekNum}`)), 6.5, 10.5).toFixed(1);
+
+  const indicatorOptions = ['COD、NH₃-N', 'COD、TP', 'NH₃-N、TP', 'COD', 'NH₃-N', 'TP、SS'];
+  const mainExceedIndicators = indicatorOptions[seededInt(seededRandom(hashString(`ind-${weekNum}`)), 0, indicatorOptions.length - 1)];
+
+  const trendWeeks = Array.from({ length: 8 }, (_, i) => `第${weekNum - 7 + i}周`);
+  const trendRand = seededRandom(hashString(`trend-${weekNum}`));
+  const trendCurrent = trendWeeks.map((_, i) =>
+    +(93 + seededRange(seededRandom(hashString(`tc-${weekNum}-${i}`)), 0, 6)).toFixed(1)
+  );
+  const trendLastWeek = trendWeeks.map((_, i) =>
+    +(92 + seededRange(seededRandom(hashString(`tlw-${weekNum}-${i}`)), 0, 6)).toFixed(1)
+  );
+  const trendLastYear = trendWeeks.map((_, i) =>
+    +(90 + seededRange(seededRandom(hashString(`tly-${weekNum}-${i}`)), 0, 6)).toFixed(1)
+  );
+  trendCurrent[7] = avgCompliance;
+  trendLastWeek[7] = lastWeekCompliance;
+  trendLastYear[7] = lastYearCompliance;
+
   return {
-    week: '2026年第24周',
-    complianceRateYoy: Math.round(rand(-5, 8) * 100) / 100,
-    complianceRateMom: Math.round(rand(-3, 5) * 100) / 100,
-    energyRanking: [
-      { plantId: 'P010101', name: '朝阳区第一污水处理厂', unitEnergy: 0.22 },
-      { plantId: 'P020101', name: '浦东新区第一污水处理厂', unitEnergy: 0.25 },
-      { plantId: 'P040101', name: '南京第一污水处理厂', unitEnergy: 0.28 },
-      { plantId: 'P050101', name: '杭州第一污水处理厂', unitEnergy: 0.30 },
-      { plantId: 'P030101', name: '广州第一污水处理厂', unitEnergy: 0.32 },
-    ],
-    faultDistribution: faultTypes.map(type => ({ type, count: randInt(1, 25) })),
-    recommendations: [
-      '建议将A2/O工艺曝气量下调8%，预计可降低能耗约12%',
-      '3号厂污泥回流比建议从80%调整至70%，改善脱氮效果',
-      '5号厂鼓风机建议安排本月15日预防性维护',
-      '建议东区CAST工艺厂群增加周末值班人员，降低故障响应时间',
-    ],
+    week: weekLabel,
+    weekNum,
+    avgCompliance,
+    complianceRateYoy,
+    complianceRateMom,
+    lastWeekCompliance,
+    lastYearCompliance,
+    avgEnergy,
+    lastWeekEnergy,
+    minEnergy,
+    maxEnergy,
+    totalElectricity,
+    totalCost,
+    energyRanking,
+    faultDistribution,
+    recommendations,
+    totalPlants,
+    stablePlants,
+    riskPlants,
+    totalEquipment,
+    faultEquipment,
+    faultRate,
+    faultRepaired,
+    faultPending,
+    avgRepairHours,
+    mainExceedIndicators,
+    trendWeeks,
+    trendCurrent,
+    trendLastWeek,
+    trendLastYear,
   };
 }
 

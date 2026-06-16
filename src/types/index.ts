@@ -87,11 +87,35 @@ export interface EmissionPlan {
 
 export interface OperationReport {
   week: string;
+  weekNum: number;
+  avgCompliance: number;
   complianceRateYoy: number;
   complianceRateMom: number;
+  lastWeekCompliance: number;
+  lastYearCompliance: number;
+  avgEnergy: number;
+  lastWeekEnergy: number;
+  minEnergy: number;
+  maxEnergy: number;
+  totalElectricity: number;
+  totalCost: number;
   energyRanking: { plantId: string; name: string; unitEnergy: number }[];
   faultDistribution: { type: string; count: number }[];
   recommendations: string[];
+  totalPlants: number;
+  stablePlants: number;
+  riskPlants: number;
+  totalEquipment: number;
+  faultEquipment: number;
+  faultRate: number;
+  faultRepaired: number;
+  faultPending: number;
+  avgRepairHours: number;
+  mainExceedIndicators: string;
+  trendWeeks: string[];
+  trendCurrent: number[];
+  trendLastWeek: number[];
+  trendLastYear: number[];
 }
 
 export type UserRole = 'national' | 'provincial' | 'municipal';
