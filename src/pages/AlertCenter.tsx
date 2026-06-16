@@ -455,11 +455,24 @@ const AlertCenter: React.FC = () => {
       dataIndex: 'plantName',
       key: 'plantName',
       width: 200,
-      render: (v: string, record: AlertRecord) => (
-        <Button type="link" onClick={() => navigate(`/plant-detail/${record.plantId}`)}>
-          {v}
-        </Button>
-      ),
+      render: (v: string, record: AlertRecord) => {
+        const canAccess = permissionFilteredPlants.some((p) => p.id === record.plantId);
+        return (
+          <Button
+            type="link"
+            onClick={() => {
+              if (!canAccess) {
+                message.warning('您没有权限访问该污水厂');
+                navigate('/alert');
+                return;
+              }
+              navigate(`/plant-detail/${record.plantId}`);
+            }}
+          >
+            {v}
+          </Button>
+        );
+      },
     },
     {
       title: '预警内容',
@@ -633,7 +646,17 @@ const AlertCenter: React.FC = () => {
                   <Text type="secondary">污水厂：</Text>
                   <Button
                     type="link"
-                    onClick={() => navigate(`/plant-detail/${selectedAlert.plantId}`)}
+                    onClick={() => {
+                      const canAccess = permissionFilteredPlants.some((p) => p.id === selectedAlert.plantId);
+                      if (!canAccess) {
+                        message.warning('您没有权限访问该污水厂');
+                        setDetailDrawerVisible(false);
+                        navigate('/alert');
+                        return;
+                      }
+                      setDetailDrawerVisible(false);
+                      navigate(`/plant-detail/${selectedAlert.plantId}`);
+                    }}
                   >
                     {selectedAlert.plantName}
                   </Button>

@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { Card, Row, Col, Button, Space, Tag, Typography, Timeline, Statistic, Alert } from 'antd';
+import React, { useMemo, useEffect } from 'react';
+import { Card, Row, Col, Button, Space, Tag, Typography, Timeline, Statistic, Alert, message } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import { ArrowLeftOutlined, EnvironmentOutlined, ThunderboltOutlined, ToolOutlined } from '@ant-design/icons';
 import { useNavigate, useParams, Navigate } from 'react-router-dom';
@@ -24,6 +24,13 @@ const PlantDetail: React.FC = () => {
     if (!plant) return false;
     return permissionFilteredPlants.some((p) => p.id === plant.id);
   }, [plant, permissionFilteredPlants]);
+
+  useEffect(() => {
+    if (plant && !hasPermission) {
+      message.warning('您没有权限访问该污水厂，即将返回首页');
+      navigate('/dashboard', { replace: true });
+    }
+  }, [plant, hasPermission, navigate]);
 
   const trendData = useMemo(() => {
     if (!plantId) return { cod: [], nh3n: [], tp: [] };

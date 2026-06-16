@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from 'react';
-import { Card, Row, Col, Statistic, Table, Tag, Button, Upload, Alert, Select, Typography, Space, Progress, message } from 'antd';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Card, Row, Col, Statistic, Table, Tag, Button, Upload, Alert, Select, Typography, Space, Progress, message, Empty } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import { UploadOutlined, FileExcelOutlined, WarningOutlined, SafetyOutlined, CheckCircleOutlined, DeleteOutlined } from '@ant-design/icons';
 import * as XLSX from 'xlsx';
@@ -71,11 +71,31 @@ const EmissionManagement: React.FC = () => {
   const [selectedProvince, setSelectedProvince] = useState<string | undefined>(getDefaultProvince());
   const [uploadedInfo, setUploadedInfo] = useState<UploadedEmissionData | null>(null);
 
+  useEffect(() => {
+    setSelectedProvince(getDefaultProvince());
+  }, [user.role, user.province]);
+
   const provinceList = useMemo(() => [...new Set(permissionFilteredPlants.map((p) => p.province))].sort(), [permissionFilteredPlants]);
 
+  const scopeFilteredRecords = useMemo(() => {
+    if (!uploadedInfo || uploadedInfo.records.length === 0) return [];
+    return uploadedInfo.records.filter((r) => {
+      if (user.role === 'provincial') {
+        return r.province === user.province;
+      }
+      if (user.role === 'municipal') {
+        if (r.city) {
+          return r.city === user.city;
+        }
+        return r.province === user.province;
+      }
+      return true;
+    });
+  }, [uploadedInfo, user]);
+
   const emissionPlans = useMemo<EmissionPlan[]>(() => {
-    if (uploadedInfo && uploadedInfo.records.length > 0) {
-      return uploadedInfo.records.map((record) => {
+    if (uploadedInfo && scopeFilteredRecords.length > 0) {
+      return scopeFilteredRecords.map((record) => {
         const seedBase = `${record.province}-${record.city || ''}-${uploadedInfo.uploadTime}`;
         const actualVolumeRatio = hashRandom(`${seedBase}-volume`, 0.6, 1.05);
         const actualCodRatio = hashRandom(`${seedBase}-cod`, 0.6, 1.05);
@@ -95,8 +115,11 @@ const EmissionManagement: React.FC = () => {
         };
       });
     }
+    if (uploadedInfo && scopeFilteredRecords.length === 0) {
+      return [];
+    }
     return provinceList.map((province) => generateEmissionPlan(province));
-  }, [provinceList, uploadedInfo]);
+  }, [provinceList, uploadedInfo, scopeFilteredRecords]);
 
   const filteredPlans = useMemo(() => {
     let plans = emissionPlans;
@@ -110,14 +133,17 @@ const EmissionManagement: React.FC = () => {
   }, [emissionPlans, selectedProvince, user, permissionFilteredPlants]);
 
   const overallStats = useMemo(() => {
+    if (emissionPlans.length === 0) {
+      return { totalTarget: 0, totalActual: 0, completionRate: 0, gap: 0 };
+    }
     const totalTarget = emissionPlans.reduce((s, p) => s + p.targetVolume, 0);
     const totalActual = emissionPlans.reduce((s, p) => s + p.actualVolume, 0);
-    const completionRate = +((totalActual / totalTarget) * 100).toFixed(2);
+    const completionRate = totalTarget > 0 ? +((totalActual / totalTarget) * 100).toFixed(2) : 0;
     const gap = totalActual - totalTarget;
     return { totalTarget, totalActual, completionRate, gap };
   }, [emissionPlans]);
 
-  const showAlert = overallStats.completionRate < 80;
+  const showAlert = overallStats.totalTarget > 0 && overallStats.completionRate < 80;
 
   const originalTargetSum = useMemo(() => {
     return provinceList.reduce((sum, province) => {
@@ -135,8 +161,8 @@ const EmissionManagement: React.FC = () => {
       return date >= today && date < new Date(today.getTime() + 90 * 86400000);
     });
 
-    if (uploadedInfo && uploadedInfo.records.length > 0) {
-      const uploadedTargetSum = uploadedInfo.records.reduce((s, r) => s + r.targetVolume, 0);
+    if (uploadedInfo && scopeFilteredRecords.length > 0) {
+      const uploadedTargetSum = scopeFilteredRecords.reduce((s, r) => s + r.targetVolume, 0);
       const ratio = originalTargetSum > 0 ? uploadedTargetSum / originalTargetSum : 1;
       return next90Days.map((d) => ({
         date: d.date,
@@ -145,8 +171,16 @@ const EmissionManagement: React.FC = () => {
         predicted: d.predicted > 0 ? Math.round(d.predicted * ratio) : 0,
       }));
     }
+    if (uploadedInfo && scopeFilteredRecords.length === 0) {
+      return next90Days.map((d) => ({
+        date: d.date,
+        planned: 0,
+        actual: 0,
+        predicted: 0,
+      }));
+    }
     return next90Days;
-  }, [uploadedInfo, originalTargetSum, user]);
+  }, [uploadedInfo, originalTargetSum, user, scopeFilteredRecords]);
 
   const predictionChartOption = useMemo(() => {
     const dates = predictionData.map((d) => d.date);
@@ -231,11 +265,16 @@ const EmissionManagement: React.FC = () => {
     };
   }, [predictionData]);
 
+  const hasScopeData = useMemo(() => {
+    if (!uploadedInfo) return true;
+    return scopeFilteredRecords.length > 0;
+  }, [uploadedInfo, scopeFilteredRecords]);
+
   const provincialChartData = useMemo(() => {
     return emissionPlans
       .map((p) => ({
         province: p.province,
-        completionRate: +((p.actualVolume / p.targetVolume) * 100).toFixed(2),
+        completionRate: p.targetVolume > 0 ? +((p.actualVolume / p.targetVolume) * 100).toFixed(2) : 0,
       }))
       .sort((a, b) => b.completionRate - a.completionRate);
   }, [emissionPlans]);
@@ -603,7 +642,7 @@ const EmissionManagement: React.FC = () => {
             <Row gutter={[16, 16]}>
               <Col span={8}>
                 <Statistic
-                  title={<span style={{ color: '#595959' }}>上传记录数</span>}
+                  title={<span style={{ color: '#595959' }}>文件记录数</span>}
                   value={uploadedInfo.records.length}
                   suffix="条"
                   valueStyle={{ color: '#1890ff', fontSize: 20 }}
@@ -611,124 +650,137 @@ const EmissionManagement: React.FC = () => {
               </Col>
               <Col span={8}>
                 <Statistic
-                  title={<span style={{ color: '#595959' }}>总目标处理量</span>}
-                  value={uploadedInfo.records.reduce((s, r) => s + r.targetVolume, 0)}
-                  suffix="吨"
-                  valueStyle={{ color: '#36cfc9', fontSize: 20 }}
-                  formatter={(v) => (v !== undefined && v !== null ? Number(v).toLocaleString() : v)}
+                  title={<span style={{ color: '#595959' }}>当前权限匹配记录</span>}
+                  value={scopeFilteredRecords.length}
+                  suffix="条"
+                  valueStyle={{ color: scopeFilteredRecords.length > 0 ? '#36cfc9' : '#ff4d4f', fontSize: 20 }}
                 />
               </Col>
               <Col span={8}>
                 <Statistic
-                  title={<span style={{ color: '#595959' }}>覆盖省份</span>}
-                  value={new Set(uploadedInfo.records.map((r) => r.province)).size}
-                  suffix="个"
+                  title={<span style={{ color: '#595959' }}>当前权限总目标量</span>}
+                  value={scopeFilteredRecords.reduce((s, r) => s + r.targetVolume, 0)}
+                  suffix="吨"
                   valueStyle={{ color: '#722ed1', fontSize: 20 }}
+                  formatter={(v) => (v !== undefined && v !== null ? Number(v).toLocaleString() : v)}
                 />
               </Col>
             </Row>
             <div style={{ marginTop: 12, color: '#8c8c8c', fontSize: 12 }}>
               已上传时间: {new Date(uploadedInfo.uploadTime).toLocaleString('zh-CN')}
+              {user.role !== 'national' && (
+                <span style={{ marginLeft: 12 }}>
+                  当前按 {user.role === 'provincial' ? user.province : `${user.province}${user.city || ''}`} 管辖范围统计
+                </span>
+              )}
             </div>
           </Card>
         )}
       </Card>
 
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col span={6}>
-          <Card style={cardStyle}>
-            <Statistic
-              title={<span style={{ color: '#595959' }}>年度目标处理量</span>}
-              value={overallStats.totalTarget}
-              suffix="吨"
-              prefix={<SafetyOutlined />}
-              valueStyle={{ color: '#36cfc9' }}
-              formatter={(v) => (v !== undefined && v !== null ? Number(v).toLocaleString() : v)}
-            />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card style={cardStyle}>
-            <Statistic
-              title={<span style={{ color: '#595959' }}>实际处理量</span>}
-              value={overallStats.totalActual}
-              suffix="吨"
-              prefix={<CheckCircleOutlined />}
-              valueStyle={{ color: '#73d13d' }}
-              formatter={(v) => (v !== undefined && v !== null ? Number(v).toLocaleString() : v)}
-            />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card style={cardStyle}>
-            <Statistic
-              title={<span style={{ color: '#595959' }}>完成率</span>}
-              value={overallStats.completionRate}
-              suffix="%"
-              prefix={<SafetyOutlined />}
-              valueStyle={{ color: overallStats.completionRate >= 80 ? '#73d13d' : '#ff4d4f' }}
-            />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card style={cardStyle}>
-            <Statistic
-              title={<span style={{ color: '#595959' }}>减排缺口</span>}
-              value={Math.abs(overallStats.gap)}
-              suffix="吨"
-              prefix={overallStats.gap < 0 ? <WarningOutlined /> : <CheckCircleOutlined />}
-              valueStyle={{ color: overallStats.gap < 0 ? '#ff4d4f' : '#73d13d' }}
-              formatter={(v) => `${overallStats.gap < 0 ? '-' : '+'}${v !== undefined && v !== null ? Number(v).toLocaleString() : v}`}
-            />
-          </Card>
-        </Col>
-      </Row>
+      {hasScopeData ? (
+        <>
+          <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+            <Col span={6}>
+              <Card style={cardStyle}>
+                <Statistic
+                  title={<span style={{ color: '#595959' }}>年度目标处理量</span>}
+                  value={overallStats.totalTarget}
+                  suffix="吨"
+                  prefix={<SafetyOutlined />}
+                  valueStyle={{ color: '#36cfc9' }}
+                  formatter={(v) => (v !== undefined && v !== null ? Number(v).toLocaleString() : v)}
+                />
+              </Card>
+            </Col>
+            <Col span={6}>
+              <Card style={cardStyle}>
+                <Statistic
+                  title={<span style={{ color: '#595959' }}>实际处理量</span>}
+                  value={overallStats.totalActual}
+                  suffix="吨"
+                  prefix={<CheckCircleOutlined />}
+                  valueStyle={{ color: '#73d13d' }}
+                  formatter={(v) => (v !== undefined && v !== null ? Number(v).toLocaleString() : v)}
+                />
+              </Card>
+            </Col>
+            <Col span={6}>
+              <Card style={cardStyle}>
+                <Statistic
+                  title={<span style={{ color: '#595959' }}>完成率</span>}
+                  value={overallStats.completionRate}
+                  suffix="%"
+                  prefix={<SafetyOutlined />}
+                  valueStyle={{ color: overallStats.completionRate >= 80 ? '#73d13d' : '#ff4d4f' }}
+                />
+              </Card>
+            </Col>
+            <Col span={6}>
+              <Card style={cardStyle}>
+                <Statistic
+                  title={<span style={{ color: '#595959' }}>减排缺口</span>}
+                  value={Math.abs(overallStats.gap)}
+                  suffix="吨"
+                  prefix={overallStats.gap < 0 ? <WarningOutlined /> : <CheckCircleOutlined />}
+                  valueStyle={{ color: overallStats.gap < 0 ? '#ff4d4f' : '#73d13d' }}
+                  formatter={(v) => `${overallStats.gap < 0 ? '-' : '+'}${v !== undefined && v !== null ? Number(v).toLocaleString() : v}`}
+                />
+              </Card>
+            </Col>
+          </Row>
 
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col span={12}>
-          <Card title={<span style={{ color: '#262626' }}>90天减排缺口预测</span>} style={cardStyle} styles={{ header: headStyle }}>
-            <ReactECharts option={predictionChartOption} style={{ height: 400 }} />
-          </Card>
-        </Col>
-        <Col span={12}>
-          <Card title={<span style={{ color: '#262626' }}>各省份减排完成情况</span>} style={cardStyle} styles={{ header: headStyle }}>
-            <ReactECharts option={provincialChartOption} style={{ height: 400 }} />
-          </Card>
-        </Col>
-      </Row>
+          <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+            <Col span={12}>
+              <Card title={<span style={{ color: '#262626' }}>90天减排缺口预测</span>} style={cardStyle} styles={{ header: headStyle }}>
+                <ReactECharts option={predictionChartOption} style={{ height: 400 }} />
+              </Card>
+            </Col>
+            <Col span={12}>
+              <Card title={<span style={{ color: '#262626' }}>各省份减排完成情况</span>} style={cardStyle} styles={{ header: headStyle }}>
+                <ReactECharts option={provincialChartOption} style={{ height: 400 }} />
+              </Card>
+            </Col>
+          </Row>
 
-      <Card
-        title={<span style={{ color: '#262626' }}>减排完成详情</span>}
-        style={{ ...cardStyle, marginTop: 16 }}
-        styles={{ header: headStyle }}
-        extra={
-          user.role === 'provincial' ? null : (
-            <Select
-              placeholder="选择省份"
-              allowClear={user.role !== 'municipal'}
-              style={{ width: 180 }}
-              value={selectedProvince}
-              onChange={setSelectedProvince}
-              disabled={user.role === 'municipal'}
-            >
-              {provinceList.map((p) => (
-                <Option key={p} value={p}>
-                  {p}
-                </Option>
-              ))}
-            </Select>
-          )
-        }
-      >
-        <Table
-          columns={tableColumns}
-          dataSource={filteredPlans}
-          rowKey="province"
-          scroll={{ x: 1000 }}
-          size="small"
-          pagination={{ pageSize: 10, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
-        />
-      </Card>
+          <Card
+            title={<span style={{ color: '#262626' }}>减排完成详情</span>}
+            style={{ ...cardStyle, marginTop: 16 }}
+            styles={{ header: headStyle }}
+            extra={
+              user.role === 'provincial' ? null : (
+                <Select
+                  placeholder="选择省份"
+                  allowClear={user.role !== 'municipal'}
+                  style={{ width: 180 }}
+                  value={selectedProvince}
+                  onChange={setSelectedProvince}
+                  disabled={user.role === 'municipal'}
+                >
+                  {provinceList.map((p) => (
+                    <Option key={p} value={p}>
+                      {p}
+                    </Option>
+                  ))}
+                </Select>
+              )
+            }
+          >
+            <Table
+              columns={tableColumns}
+              dataSource={filteredPlans}
+              rowKey="province"
+              scroll={{ x: 1000 }}
+              size="small"
+              pagination={{ pageSize: 10, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
+            />
+          </Card>
+        </>
+      ) : (
+        <Card style={{ ...cardStyle, marginTop: 16, textAlign: 'center' }} bodyStyle={{ padding: '60px 24px' }}>
+          <Empty description="当前权限范围内无匹配减排数据，请上传包含本辖区的文件" />
+        </Card>
+      )}
     </div>
   );
 };
