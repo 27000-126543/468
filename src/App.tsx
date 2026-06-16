@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ConfigProvider, theme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
@@ -11,11 +11,30 @@ import EmissionManagement from './pages/EmissionManagement';
 import OperationReport from './pages/OperationReport';
 import EquipmentManagement from './pages/EquipmentManagement';
 import { AppContext } from './store/context';
-import type { UserInfo } from './types';
-import { MOCK_USER } from './mock/data';
+import type { UserInfo, WaterQuality, EquipmentStatus } from './types';
+import { MOCK_USER, PLANTS, generateWaterQuality, generateEquipmentStatus } from './mock/data';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<UserInfo>(MOCK_USER);
+  const [snapshotKey, setSnapshotKey] = useState(0);
+
+  const refreshMonitorSnapshot = useCallback(() => {
+    setSnapshotKey((k) => k + 1);
+  }, []);
+
+  const monitorSnapshot = useMemo(() => {
+    const waterQualityMap: Record<string, WaterQuality> = {};
+    const equipmentMap: Record<string, EquipmentStatus> = {};
+    PLANTS.forEach((plant) => {
+      waterQualityMap[plant.id] = generateWaterQuality(plant);
+      equipmentMap[plant.id] = generateEquipmentStatus(plant.id);
+    });
+    return {
+      waterQualityMap,
+      equipmentMap,
+      snapshotTime: new Date().toISOString(),
+    };
+  }, [snapshotKey]);
 
   return (
     <ConfigProvider
@@ -43,7 +62,7 @@ const App: React.FC = () => {
         },
       }}
     >
-      <AppContext.Provider value={{ user, setUser }}>
+      <AppContext.Provider value={{ user, setUser, monitorSnapshot, refreshMonitorSnapshot }}>
         <HashRouter>
           <Routes>
             <Route path="/" element={<MainLayout />}>

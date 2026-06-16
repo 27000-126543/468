@@ -34,7 +34,7 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
-import { PLANTS, generateAlerts, generateWaterQuality, generateEquipmentStatus } from '../mock/data';
+import { PLANTS, generateAlerts } from '../mock/data';
 import { useAppContext } from '../store/context';
 import { filterPlantsByPermission } from '../utils/permission';
 import type { AlertRecord, ApprovalStep, PlantInfo } from '../types';
@@ -153,7 +153,7 @@ function generateSyncEquipmentMessage(plant: PlantInfo, seed: string): string {
 
 const AlertCenter: React.FC = () => {
   const navigate = useNavigate();
-  const { user } = useAppContext();
+  const { user, monitorSnapshot } = useAppContext();
   const permissionFilteredPlants = useMemo(() => filterPlantsByPermission(PLANTS, user.role, user.province, user.city), [user]);
   const [alerts, setAlerts] = useState<AlertRecord[]>(() => {
     const baseAlerts = generateAlerts(permissionFilteredPlants);
@@ -181,6 +181,19 @@ const AlertCenter: React.FC = () => {
       setAlerts(baseAlerts);
     }
   }, [user, permissionFilteredPlants]);
+
+  useEffect(() => {
+    if (detailDrawerVisible && selectedAlert) {
+      const hasPermission = permissionFilteredPlants.some((p) => p.id === selectedAlert.plantId);
+      if (!hasPermission) {
+        setDetailDrawerVisible(false);
+        setSelectedAlert(null);
+        setProcessModalVisible(false);
+        setLogModalVisible(false);
+        message.info('管辖范围已变更，当前预警不在权限范围内');
+      }
+    }
+  }, [user, permissionFilteredPlants, detailDrawerVisible, selectedAlert]);
 
   const stats = useMemo(() => {
     const total = alerts.length;
@@ -281,8 +294,9 @@ const AlertCenter: React.FC = () => {
     const normalPlantTypeKeys: string[] = [];
 
     permissionFilteredPlants.forEach((plant) => {
-      const waterQuality = generateWaterQuality(plant);
-      const equipment = generateEquipmentStatus(plant.id);
+      const waterQuality = monitorSnapshot.waterQualityMap[plant.id];
+      const equipment = monitorSnapshot.equipmentMap[plant.id];
+      if (!waterQuality || !equipment) return;
 
       const codExceed = waterQuality.codOut > waterQuality.codLimit;
       const nh3nExceed = waterQuality.nh3nOut > waterQuality.nh3nLimit;
@@ -294,8 +308,10 @@ const AlertCenter: React.FC = () => {
       if (waterQualityAbnormal) {
         const alertId = `SYNC-${plant.id}-water_quality-${timestamp}`;
         const dedupeKey = `${plant.id}-water_quality`;
-        const exists = alerts.some((a) => `${a.plantId}-${a.type}` === dedupeKey);
-        if (!exists) {
+        const hasActive = alerts.some(
+          (a) => `${a.plantId}-${a.type}` === dedupeKey && (a.status === 'pending' || a.status === 'processing')
+        );
+        if (!hasActive) {
           const exceedMsgs: string[] = [];
           if (codExceed) exceedMsgs.push(`COD${waterQuality.codOut}mg/L超标（限值${waterQuality.codLimit}mg/L）`);
           if (nh3nExceed) exceedMsgs.push(`氨氮${waterQuality.nh3nOut}mg/L超标（限值${waterQuality.nh3nLimit}mg/L）`);
@@ -327,8 +343,10 @@ const AlertCenter: React.FC = () => {
       if (equipmentAbnormal) {
         const alertId = `SYNC-${plant.id}-equipment-${timestamp}`;
         const dedupeKey = `${plant.id}-equipment`;
-        const exists = alerts.some((a) => `${a.plantId}-${a.type}` === dedupeKey);
-        if (!exists) {
+        const hasActive = alerts.some(
+          (a) => `${a.plantId}-${a.type}` === dedupeKey && (a.status === 'pending' || a.status === 'processing')
+        );
+        if (!hasActive) {
           const detailMsg = `设备综合故障率${equipment.faultRate}%（阈值5%），故障设备${equipment.faultEquipment}台/总数${equipment.totalEquipment}台`;
           newAlerts.push({
             id: alertId,

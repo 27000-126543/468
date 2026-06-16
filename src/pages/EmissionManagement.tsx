@@ -79,18 +79,36 @@ const EmissionManagement: React.FC = () => {
 
   const scopeFilteredRecords = useMemo(() => {
     if (!uploadedInfo || uploadedInfo.records.length === 0) return [];
-    return uploadedInfo.records.filter((r) => {
+
+    const filtered = uploadedInfo.records.filter((r) => {
       if (user.role === 'provincial') {
         return r.province === user.province;
       }
       if (user.role === 'municipal') {
-        if (r.city) {
-          return r.city === user.city;
-        }
-        return r.province === user.province;
+        return r.province === user.province && r.city === user.city;
       }
       return true;
     });
+
+    if (user.role === 'municipal' && filtered.length > 1) {
+      const merged: UploadedEmissionRecord = {
+        province: user.province || '',
+        city: user.city,
+        targetVolume: 0,
+        codLimit: 0,
+        nh3nLimit: 0,
+        tpLimit: 0,
+      };
+      filtered.forEach((r) => {
+        merged.targetVolume += r.targetVolume;
+        merged.codLimit += r.codLimit;
+        merged.nh3nLimit += r.nh3nLimit;
+        merged.tpLimit += r.tpLimit;
+      });
+      return [merged];
+    }
+
+    return filtered;
   }, [uploadedInfo, user]);
 
   const emissionPlans = useMemo<EmissionPlan[]>(() => {

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Card, Row, Col, Select, Table, Tag, Space, Typography } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import { useNavigate } from 'react-router-dom';
-import { PLANTS, generateWaterQuality, generateEquipmentStatus } from '../mock/data';
+import { PLANTS } from '../mock/data';
 import type { PlantInfo, WaterQuality, EquipmentStatus } from '../types';
 import { useAppContext } from '../store/context';
 import { filterPlantsByPermission } from '../utils/permission';
@@ -108,19 +108,18 @@ const Monitoring: React.FC = () => {
   const navigate = useNavigate();
   const [selectedProvince, setSelectedProvince] = useState<string | undefined>(undefined);
   const [selectedProcess, setSelectedProcess] = useState<string | undefined>(undefined);
-  const [updateKey, setUpdateKey] = useState(0);
-  const { user } = useAppContext();
+  const { user, monitorSnapshot, refreshMonitorSnapshot } = useAppContext();
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setUpdateKey((k) => k + 1);
+      refreshMonitorSnapshot();
     }, 3000);
     return () => clearInterval(interval);
-  }, []);
+  }, [refreshMonitorSnapshot]);
 
   const permissionFilteredPlants = useMemo(() => {
     return filterPlantsByPermission(PLANTS, user.role, user.province, user.city);
-  }, [user, updateKey]);
+  }, [user]);
 
   const provinceList = useMemo(() => [...new Set(permissionFilteredPlants.map((p) => p.province))].sort(), [permissionFilteredPlants]);
   const processList = useMemo(() => [...new Set(permissionFilteredPlants.map((p) => p.processType))].sort(), [permissionFilteredPlants]);
@@ -130,23 +129,28 @@ const Monitoring: React.FC = () => {
     const totalDesign = permissionFilteredPlants.reduce((s, p) => s + p.designScale, 0);
     const lr = Math.min(120, +((totalLoad / totalDesign) * 100 * (0.95 + Math.random() * 0.1)).toFixed(1));
 
-    const wqSamples = permissionFilteredPlants.slice(0, 50).map((p) => generateWaterQuality(p));
+    const wqSamples = permissionFilteredPlants
+      .slice(0, 50)
+      .map((p) => monitorSnapshot.waterQualityMap[p.id])
+      .filter(Boolean);
     const compliant = wqSamples.filter((w) => w.codOut <= w.codLimit && w.nh3nOut <= w.nh3nLimit && w.tpOut <= w.tpLimit).length;
-    const cr = +((compliant / wqSamples.length) * 100 * (0.98 + Math.random() * 0.04)).toFixed(1);
+    const cr = wqSamples.length > 0
+      ? +((compliant / wqSamples.length) * 100 * (0.98 + Math.random() * 0.04)).toFixed(1)
+      : 100;
 
     const ee = +((0.25 + Math.random() * 0.25)).toFixed(3);
     const si = +((0.4 + Math.random() * 0.4)).toFixed(2);
 
     return [lr, cr, ee, si];
-  }, [permissionFilteredPlants, updateKey]);
+  }, [permissionFilteredPlants, monitorSnapshot]);
 
   const plantData = useMemo<PlantRealTimeData[]>(() => {
     return permissionFilteredPlants.map((plant) => {
-      const wq = generateWaterQuality(plant);
-      const eq = generateEquipmentStatus(plant.id);
+      const wq = monitorSnapshot.waterQualityMap[plant.id];
+      const eq = monitorSnapshot.equipmentMap[plant.id];
       return { plant, waterQuality: wq, equipmentStatus: eq };
     });
-  }, [permissionFilteredPlants, updateKey]);
+  }, [permissionFilteredPlants, monitorSnapshot]);
 
   const filteredData = useMemo(() => {
     return plantData.filter((d) => {
